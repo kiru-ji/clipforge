@@ -6,134 +6,106 @@
 
 ## HERMES PROMPT (copy below this line)
 
-You are setting up **ClipForge v2**, a production-grade AI video clipping and auto-posting platform. The repository is at: https://github.com/kiru-ji/clipforge
+You are setting up **ClipForge v2**, a production-grade AI video clipping platform.
+Repo: https://github.com/kiru-ji/clipforge
 
-### PHASE 1: UNDERSTAND THE CODEBASE FIRST
+### PHASE 1: UNDERSTAND THE CODEBASE
 
-Before doing ANYTHING else, you MUST:
+Before doing ANYTHING else:
 
-1. Clone the repo: `git clone https://github.com/kiru-ji/clipforge.git && cd clipforge`
-2. Read EVERY file in `clipforge_v2/` thoroughly:
-   - `contracts.py` — Abstract base classes (ASRBackend, LLMBackend, VideoProcessor, PublisherBackend), DTOs (Transcript, ViralMoment, ClipMetadata), Observer pattern, Job state machine
-   - `config.py` — Pydantic settings with runtime mutation, .env persistence, credential hot-reload
-   - `asr.py` — Groq Whisper API backend with chunking for large files, rate-limit retry
-   - `llm.py` — Qwen/DashScope OpenAI-compatible backend for moment detection + metadata generation
-   - `video.py` — FFmpeg CPU-only processor (download via yt-dlp, extract, reframe to 9:16, burn subtitles)
-   - `pipeline.py` — Orchestrator with progress notifications, transcript caching, error handling
-   - `app.py` — NiceGUI web dashboard (Settings page for credentials + Dashboard for processing + Results gallery)
-   - `requirements.txt` — All Python dependencies
-   - `.env.example` — Configuration template
-   - `README.md` — Architecture documentation
+1. Clone: `git clone https://github.com/kiru-ji/clipforge.git && cd clipforge`
+2. Read EVERY file in `clipforge_v2/`:
+   - `contracts.py` — Abstract base classes, DTOs, Observer pattern, Job state machine
+   - `config.py` — Pydantic settings, thread-safe singleton, atomic .env writes, chmod 600
+   - `asr.py` — Groq Whisper API with tenacity retry, async chunking, rate-limit handling
+   - `llm.py` — Qwen/DashScope backend, sliding window for long transcripts, safe JSON parsing
+   - `video.py` — FFmpeg CPU processor, SSRF protection, single-pass extract+reframe, SRT generation
+   - `pipeline.py` — Orchestrator with job locking, atomic cache, error propagation, cleanup
+   - `publisher.py` — YouTube/TikTok/Instagram publisher implementations
+   - `app.py` — NiceGUI dashboard with password auth, per-session observers, clip preview
+   - `requirements.txt`, `.env.example`, `README.md`
 
-3. After reading, produce a summary confirming you understand:
-   - The Strategy pattern: how backends are swappable via abstract interfaces
-   - The Observer pattern: how pipeline progress flows to the GUI
-   - The data flow: URL → download → transcribe (Groq) → detect moments (Qwen) → extract clips (FFmpeg) → generate metadata (Qwen) → publish
-   - Why Groq is used instead of local Whisper (CPU-only VPS, no GPU)
-   - Why NiceGUI was chosen over Streamlit/Gradio (event-driven, production-grade)
+3. Confirm you understand:
+   - Strategy pattern: backends swappable via abstract interfaces
+   - Observer pattern: per-session progress (not global singleton)
+   - Data flow: URL → download → extract audio → transcribe (Groq) → detect moments (Qwen) → extract+reframe clips (FFmpeg) → generate metadata (Qwen) → publish
+   - Security: auth middleware, SSRF protection, .env chmod 600, localhost binding
+   - Why Groq not local Whisper: CPU-only VPS, no GPU
 
-**DO NOT proceed to Phase 2 until you have confirmed understanding.**
+**DO NOT proceed until confirmed.**
 
-### PHASE 2: SUGGEST API KEYS WITH REASING
+### PHASE 2: SUGGEST API KEYS
 
-Based on your understanding of the codebase, suggest which API keys are needed and WHY. Present them as a numbered list with this format:
+Present these with reasoning. WAIT for user approval.
 
 ```
-1. **GROQ_API_KEY** (REQUIRED)
-   - Used by: `asr.py` → GroqASRBackend
-   - Purpose: Speech-to-text transcription with word-level timestamps
-   - Why Groq: This VPS has no GPU. Local whisper.cpp would take 100+ minutes for a 30-min podcast. Groq runs whisper-large-v3-turbo at 30× realtime via API. Free tier is rate-limited but sufficient.
-   - Get free key: https://console.groq.com/keys
-   - Cost: $0 (free tier)
+1. GROQ_API_KEY (REQUIRED)
+   - Used by: asr.py → GroqASRBackend
+   - Purpose: Speech-to-text with word timestamps
+   - Why: No GPU on this VPS. Groq = 30× realtime free tier.
+   - Get: https://console.groq.com/keys
+   - Cost: $0
 
-2. **QWEN_API_KEY** (REQUIRED)
-   - Used by: `llm.py` → QwenLLMBackend
-   - Purpose: Viral moment detection from transcript + platform-specific metadata generation
-   - Why Qwen/DashScope: OpenAI-compatible endpoint, supports structured JSON output, good at creative content tasks
+2. QWEN_API_KEY (REQUIRED)
+   - Used by: llm.py → QwenLLMBackend
+   - Purpose: Moment detection + metadata generation
    - Base URL: https://dashscope.aliyuncs.com/compatible-mode/v1
-   - Get key: [user should provide their existing ModelScope/DashScope key]
-   - Cost: Pay-per-use, very cheap for this workload
+   - Get: User's existing ModelScope/DashScope key
+   - Cost: Pay-per-use (very cheap)
 
-3. **YOUTUBE_CLIENT_SECRETS** (OPTIONAL — for publishing)
-   - Used by: YouTube Data API v3 videos.insert
-   - Purpose: Auto-publish clips to YouTube Shorts
-   - Why direct API: As of Nov 2, 2026, unverified apps can upload publicly. 100 uploads/day free. No audit needed for self-use.
-   - Get credentials: Google Cloud Console → Create project → Enable YouTube Data API v3 → OAuth2 Desktop credentials
-   - Cost: $0
+3. ADMIN_PASSWORD (REQUIRED)
+   - Purpose: Web UI authentication
+   - Set to a strong password of your choice
+   - Without this, the UI is inaccessible (first-run setup mode)
 
-4. **UPLOAD_POST_API_KEY** (OPTIONAL — for TikTok)
-   - Used by: publisher.py → TikTok publishing
-   - Purpose: Post clips to TikTok
-   - Why Upload-Post: TikTok's direct Content Posting API requires audit that rejects personal/hobbyist apps. Unaudited = all posts private. Upload-Post uses their own approved app. Free tier = 10 uploads/month.
-   - Get key: https://app.upload-post.com/api-keys
-   - Cost: $0 (10/month free)
+4. YOUTUBE_CLIENT_SECRETS (OPTIONAL)
+   - Purpose: Auto-publish to YouTube Shorts (~6 uploads/day free)
+   - Get: Google Cloud Console → YouTube Data API v3 → OAuth2 Desktop
 
-5. **INSTAGRAM_ACCESS_TOKEN + INSTAGRAM_USER_ID** (OPTIONAL — for Instagram)
-   - Used by: publisher.py → Instagram Graph API
-   - Purpose: Post Reels to Instagram
-   - Caveat: Requires Meta App Review (free, 2-4 weeks). Professional IG account + Facebook Page needed. Resumable upload available (no public URL needed).
-   - Rate limit: 100 posts/24h
-   - Cost: $0
+5. UPLOAD_POST_API_KEY (OPTIONAL)
+   - Purpose: TikTok publishing (10 free/month)
+   - Get: https://app.upload-post.com/api-keys
 
-6. **TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID** (OPTIONAL — for approval gate)
-   - Purpose: Human approval before publishing (YouTube inauthentic-content policy compliance)
-   - Get bot token: @BotFather on Telegram
-   - Cost: $0
+6. INSTAGRAM_ACCESS_TOKEN + INSTAGRAM_USER_ID (OPTIONAL)
+   - Purpose: Instagram Reels (requires App Review, 2-4 weeks)
 ```
 
-**WAIT for user approval before proceeding. Do NOT add any keys without explicit user confirmation.**
+**WAIT for approval before proceeding.**
 
-### PHASE 3: SETUP AFTER APPROVAL
+### PHASE 3: DEPLOY
 
-Once the user approves the suggested keys and provides them:
+After user approves and provides keys:
 
-1. Create virtual environment and install dependencies:
 ```bash
 cd /home/ubuntu/clipforge  # or wherever cloned
-python3 -m venv .venv
+
+# Use python3.12 (NOT system python3.14)
+python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r clipforge_v2/requirements.txt
-```
 
-2. Install system dependencies:
-```bash
+# System deps
 sudo apt update && sudo apt install -y ffmpeg
-# Verify:
-ffmpeg -version
-yt-dlp --version
-```
+ffmpeg -version  # verify
 
-3. Create .env file with approved keys:
-```bash
-cp clipforge_v2/.env.example clipforge_v2/.env
-# Edit with user-provided keys
-```
+# Create .env from approved keys
+cp clipforge_v2/.env.example .env
+# Edit .env with user-provided values
+chmod 600 .env
 
-4. Create work directory:
-```bash
-mkdir -p /tmp/clipforge/{downloads,output,state}
-```
-
-5. Start the server:
-```bash
-cd clipforge_v2
-source ../.venv/bin/activate
+# Start server (RUN FROM REPO ROOT, not clipforge_v2/)
 python -m clipforge_v2.app
 ```
 
-6. Verify it's running:
-```bash
-curl -s http://localhost:8080 | head -5
-```
+Tell user: "ClipForge running at 127.0.0.1:8090. Access via SSH tunnel:
+`ssh -L 8090:127.0.0.1:8090 user@vps-ip` then open http://localhost:8090"
 
-7. Tell the user: "ClipForge is running at http://<VPS_IP>:8080. Open it in your browser, go to Settings to verify your API keys, then paste a YouTube URL on the Dashboard to start clipping!"
+### RULES
 
-### IMPORTANT RULES
-
-- NEVER skip Phase 1. Understanding the code prevents misconfiguration.
-- NEVER add API keys without user approval. Always explain WHY each key is needed.
-- NEVER install GPU packages (torch with CUDA, nvidia-cublas, etc.) — this is a CPU-only VPS.
-- If pip install fails on any package, troubleshoot BEFORE proceeding.
-- If ffmpeg is not available, install it BEFORE starting the server.
-- Always use the virtual environment, never install globally.
-- The server binds to 0.0.0.0:8080 by default. Make sure the VPS firewall allows port 8080.
+- NEVER skip Phase 1
+- NEVER add keys without approval
+- NEVER install GPU packages
+- NEVER bind to 0.0.0.0 (use 127.0.0.1 + SSH tunnel)
+- ALWAYS use python3.12 for venv
+- ALWAYS run `python -m clipforge_v2.app` from repo ROOT
+- ALWAYS chmod 600 on .env

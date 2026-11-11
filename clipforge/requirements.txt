@@ -1,0 +1,41 @@
+# Core pipeline
+faster-whisper>=1.2.0
+scenedetect[opencv]>=0.6.4
+ultralytics>=8.3.0
+mediapipe>=0.10.0
+opencv-python-headless>=4.10.0
+
+# Web scraping (evaluated and chosen over TinyFish/Firecrawl/Apify for local tasks)
+scrapling[all]>=0.5.1
+
+# Video processing
+yt-dlp>=2024.11.0
+pyav>=14.0.0
+
+# AI / LLM
+openai>=1.50.0          # OpenAI-compatible client for Ollama
+google-genai>=1.0.0     # Optional: Gemini for better moment detection
+
+# Publishing
+google-api-python-client>=2.150.0
+google-auth-oauthlib>=1.2.0
+httpx>=0.27.0
+
+# Automation & scheduling
+apscheduler>=3.10.0
+python-telegram-bot>=21.0
+
+# Config & state
+pyyaml>=6.0
+python-dotenv>=1.0.0
+pydantic>=2.9.0
+pydantic-settings>=2.5.0
+
+# Observability
+structlog>=24.4.0
+rich>=13.9.0
+
+# Utilities
+tenacity>=9.0.0
+aiofiles>=24.1.0
+click>=8.1.0

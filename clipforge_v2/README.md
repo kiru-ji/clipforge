@@ -1,87 +1,73 @@
 # ClipForge v2 — Cloud-Native AI Video Clipping Platform
 
-> **$0/month** production-grade video clipping automation designed for **Oracle VPS (no GPU)**
-> with Qwen API from ModelScope. Full web GUI — just enter credentials and go.
+> **$0/month** production-grade video clipping automation for **CPU-only VPS**
+> with Qwen API + Groq Whisper. Full web GUI with authentication.
 
-## Architecture Redesign for CPU-Only VPS
+## Architecture
 
-Your Oracle VPS has no GPU. This changes everything:
+| Component | Implementation | Why |
+|---|---|---|
+| **ASR** | Groq Whisper API (free tier) | 30× realtime on LPU. No GPU needed. Word timestamps. |
+| **LLM** | Qwen via DashScope API | OpenAI-compatible. Your existing ModelScope key. |
+| **Video** | FFmpeg CPU (libx264) | Works on any ARM/x86 VPS. Single-pass extract+reframe. |
+| **Frontend** | NiceGUI web dashboard | Python-native, event-driven, auth built-in. |
+| **Publishing** | YouTube direct + TikTok Upload-Post + Instagram Graph | Real publisher implementations. |
 
-| Component | Old (GPU) | New (CPU-only VPS) | Why |
-|---|---|---|---|
-| **ASR** | faster-whisper local GPU | **Groq Whisper API** (free tier) | Groq runs whisper-large-v3-turbo on LPU at 30× realtime. Free tier = rate-limited but sufficient. Word timestamps included. Zero GPU needed. |
-| **Moment Detection** | Local Ollama qwen2.5:7b | **Qwen API via ModelScope** | You already have this. OpenAI-compatible endpoint. No local model hosting. |
-| **Metadata Generation** | Local Ollama | **Qwen API via ModelScope** | Same API, same key. |
-| **Video Processing** | FFmpeg + NVENC | **FFmpeg CPU** (libx264) | Oracle ARM A1 has 4 cores / 24GB RAM free tier. Sufficient for encoding. |
-| **Frontend** | CLI only | **NiceGUI web dashboard** | Production-grade Python web UI. Credentials management, job monitoring, clip preview. |
-| **Deployment** | Local machine | **Oracle VPS + systemd** | Always-on, accessible from anywhere via browser. |
+## What's Actually Implemented
 
-### Why Groq for ASR (not local whisper.cpp)?
+- ✅ Password-protected web UI (binds localhost by default, SSH tunnel access)
+- ✅ Groq Whisper STT with chunking, retry, rate-limit handling
+- ✅ Qwen moment detection with sliding window for long videos
+- ✅ Single-pass FFmpeg extract+reframe+subtitle burn (one encode)
+- ✅ Per-job download directories (no race conditions)
+- ✅ SSRF protection (URL validation before yt-dlp)
+- ✅ Atomic transcript caching with content-hash invalidation
+- ✅ Job locking (prevents concurrent runs on same URL)
+- ✅ Per-session progress observers (multi-tab safe)
+- ✅ Clip video preview in browser
+- ✅ Job history view
+- ✅ All settings configurable via GUI
+- ✅ Auto-cleanup of old files
+- ✅ .gitignore prevents secret commits
+- ✅ .env chmod 600 (not world-readable)
+- ✅ YouTube/TikTok/Instagram publisher backends
+- ✅ tenacity retry with exponential backoff
+- ✅ Proper error propagation (no silent failures)
 
-- **whisper.cpp on ARM CPU**: ~0.3× realtime for medium model. A 30-min podcast = **100+ minutes** to transcribe.
-- **Groq Whisper API**: whisper-large-v3-turbo at **30× realtime**. Same 30-min podcast = **~1 minute**. Free tier is rate-limited but handles personal use easily.
-- **Word timestamps**: Groq supports `timestamp_granularities=["word"]` natively.
-- **Zero infrastructure**: No model downloads, no VRAM, no CUDA. Just an API key.
-
-### Why NiceGUI for Frontend?
-
-- **Python-native**: No Node.js/React build step. Single `pip install nicegui`.
-- **Production-ready**: Built on FastAPI + Vue.js. Supports auth, file uploads, real-time updates.
-- **Self-hosted**: Runs on your VPS, accessible via browser. No external dependencies.
-- **Better than Streamlit**: Streamlit reruns entire script on every interaction. NiceGUI is event-driven like a real web app.
-- **Better than Gradio**: Gradio is for ML demos. NiceGUI is for production dashboards.
-
-## System Design Principles Applied
-
-### OOP
-- **Abstract base classes** for ASR, LLM, Publisher backends (Strategy Pattern)
-- **Factory pattern** for creating backend instances from config
-- **Observer pattern** for job progress notifications
-- **Repository pattern** for job state persistence
-
-### DSA
-- **Priority queue** for job scheduling (higher viral score = higher priority)
-- **Hash map** for idempotency keys (prevent duplicate processing)
-- **B-tree indexed SQLite** for job history queries
-
-### System Design
-- **Microservice-ready monolith**: Clean module boundaries, can split later
-- **Async pipeline**: Non-blocking I/O for API calls, concurrent clip extraction
-- **Circuit breaker**: Auto-fallback if Groq/Qwen API is down
-- **Idempotent operations**: Every step can be safely retried
-
-### OS Concepts
-- **Process pool** for CPU-bound FFmpeg encoding
-- **Signal handling** for graceful shutdown
-- **File locking** for concurrent job safety
-- **Memory-mapped files** for large video I/O
-
-## Quick Start on Oracle VPS
+## Quick Start
 
 ```bash
-# 1. Clone and install
-git clone <your-repo> && cd clipforge_v2
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+# On your VPS:
+git clone https://github.com/kiru-ji/clipforge.git && cd clipforge
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -r clipforge_v2/requirements.txt
+sudo apt install -y ffmpeg  # if not already installed
 
-# 2. Configure via web UI
-python -m clipforge.app
-# Open http://your-vps-ip:8080 in browser
-# Enter your API keys in Settings → Save
+# Start server (binds 127.0.0.1:8090 by default)
+python -m clipforge_v2.app
 
-# 3. Start automation
-# Paste a YouTube URL in the dashboard → Click "Process"
-# Watch clips appear in real-time
+# Access via SSH tunnel from your local machine:
+ssh -L 8090:127.0.0.1:8090 user@your-vps-ip
+# Then open http://localhost:8090 in your browser
 ```
+
+## Security
+
+- Server binds `127.0.0.1` by default (not `0.0.0.0`)
+- Password authentication required on all pages
+- API keys stored in `.env` with `chmod 600`
+- `.gitignore` prevents committing secrets
+- URL validation blocks SSRF attacks
+- No credentials exposed in HTML (password fields only)
 
 ## API Keys Needed (all free)
 
-| Service | Purpose | Free Tier | Get Key |
-|---|---|---|---|
-| **Groq** | Speech-to-text | Rate-limited whisper-large-v3-turbo | console.groq.com |
-| **ModelScope/Qwen** | Moment detection + metadata | Your existing key | modelscope.cn |
-| **YouTube Data API** | Publishing | 100 uploads/day | console.cloud.google.com |
-| **Upload-Post** | TikTok publishing | 10 uploads/month | upload-post.com |
+| Service | Purpose | Free Tier |
+|---|---|---|
+| **Groq** | Speech-to-text | Rate-limited whisper-large-v3-turbo |
+| **ModelScope/Qwen** | Moment detection + metadata | Your existing key |
+| **YouTube Data API** | Publishing | ~6 uploads/day (1600 units/upload) |
+| **Upload-Post** | TikTok publishing | 10 uploads/month |
 
 ## License
 

@@ -89,7 +89,7 @@ class YouTubePublisher(PublisherBackend):
 
 
 class TikTokPublisher(PublisherBackend):
-    """TikTok via Upload-Post API (free tier: 10/month)."""
+    """TikTok via Upload-Post API. Note: requires paid Basic plan ($24/mo) for TikTok posting."""
 
     def __init__(self, api_key: str):
         self.api_key = api_key

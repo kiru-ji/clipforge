@@ -75,6 +75,8 @@ class SessionObserver(ProgressObserver):
 # ─── Job history (J18/P18) ──────────────────────────────────────────────────
 
 _job_history: list[dict] = []
+# J8/HIGH-8: module-level lock shared across ALL Pipeline instances
+_pipeline_lock = asyncio.Lock()
 
 
 def _record_job(result: dict):
@@ -177,8 +179,8 @@ def create_app():
                 ui.notify("Please enter a valid URL", type="warning")
                 return
 
-            # P14/J83: prevent concurrent runs
-            if observer.is_running:
+            # P14/J83: prevent concurrent runs (module-level lock)
+            if _pipeline_lock.locked():
                 ui.notify("A job is already running", type="warning")
                 return
 
@@ -191,58 +193,68 @@ def create_app():
             observer.is_running = True
             log_area.clear()
 
-            try:
-                asr = GroqASRBackend(settings.groq_api_key, settings.asr_model)
-                llm = QwenLLMBackend(settings.qwen_api_key, settings.qwen_base_url, settings.qwen_model)
-                video = FFmpegVideoProcessor(settings.ffmpeg_threads)
+            async def _run_job():
+                """J85/HIGH-6: runs under module-level lock, survives browser disconnect."""
+                async with _pipeline_lock:
+                    try:
+                        asr = GroqASRBackend(settings.groq_api_key, settings.asr_model)
+                        llm = QwenLLMBackend(settings.qwen_api_key, settings.qwen_base_url, settings.qwen_model)
+                        video = FFmpegVideoProcessor(settings.ffmpeg_threads)
 
-                publishers = []
-                if settings.has_youtube:
-                    publishers.append(YouTubePublisher(settings.youtube_client_secrets, settings.work_dir / "yt_token.json"))
-                if settings.has_tiktok:
-                    publishers.append(TikTokPublisher(settings.upload_post_api_key))
-                if settings.has_instagram:
-                    publishers.append(InstagramPublisher(settings.instagram_access_token, settings.instagram_user_id))
+                        publishers = []
+                        if settings.has_youtube:
+                            publishers.append(YouTubePublisher(settings.youtube_client_secrets, settings.work_dir / "yt_token.json"))
+                        if settings.has_tiktok:
+                            publishers.append(TikTokPublisher(settings.upload_post_api_key))
+                        if settings.has_instagram:
+                            publishers.append(InstagramPublisher(settings.instagram_access_token, settings.instagram_user_id))
 
-                pipeline = Pipeline(settings, asr, llm, video, publishers)
-                pipeline.attach(observer)
+                        pipeline = Pipeline(settings, asr, llm, video, publishers)
+                        pipeline.attach(observer)
 
-                # J85: run as background task (survives browser disconnect)
-                result = await pipeline.process(url)
-                _record_job(result)
+                        result = await pipeline.process(url)
+                        _record_job(result)
 
-                # J82: show errors prominently
-                results_container.clear()
-                with results_container:
-                    ui.separator().classes("border-gray-700")
+                        # J82: show errors prominently
+                        results_container.clear()
+                        with results_container:
+                            ui.separator().classes("border-gray-700")
 
-                    if result.get("errors"):
-                        ui.label("❌ Errors occurred").classes("text-red-400 text-lg font-bold")
-                        for err in result["errors"]:
-                            ui.label(err).classes("text-red-300 text-sm")
+                            if result.get("errors"):
+                                ui.label("❌ Errors occurred").classes("text-red-400 text-lg font-bold")
+                                for err in result["errors"]:
+                                    ui.label(err).classes("text-red-300 text-sm")
 
-                    total = result.get("total_clips", 0)
-                    if total > 0:
-                        ui.label(f"✅ {total} clips generated").classes("text-green-400 text-lg font-bold")
+                            total = result.get("total_clips", 0)
+                            if total > 0:
+                                ui.label(f"✅ {total} clips generated").classes("text-green-400 text-lg font-bold")
 
-                    for clip in result.get("clips", []):
-                        with ui.card().classes("w-full bg-gray-800 border-gray-700"):
-                            with ui.row().classes("items-center justify-between"):
-                                ui.label(f"#{clip['index']+1} {clip['title']}").classes("text-white font-medium")
-                                ui.badge(f"Score: {clip['score']}/10").props("color=orange")
-                            # P15/J86: video preview
-                            clip_path = clip.get("path", "")
-                            if Path(clip_path).exists():
-                                ui.video(clip_path).classes("w-full max-h-64 rounded mt-2")
-                            else:
-                                ui.label(clip_path).classes("text-gray-400 text-xs")
+                            for clip in result.get("clips", []):
+                                with ui.card().classes("w-full bg-gray-800 border-gray-700"):
+                                    with ui.row().classes("items-center justify-between"):
+                                        ui.label(f"#{clip['index']+1} {clip['title']}").classes("text-white font-medium")
+                                        ui.badge(f"Score: {clip['score']}/10").props("color=orange")
+                                    # P15/J86: video preview via static route
+                                    clip_path = clip.get("path", "")
+                                    if Path(clip_path).exists():
+                                        # Use relative path from output dir for static serving
+                                        try:
+                                            rel = Path(clip_path).relative_to(settings.output_dir)
+                                            ui.video(f"/clips/{rel}").classes("w-full max-h-64 rounded mt-2")
+                                        except ValueError:
+                                            ui.video(clip_path).classes("w-full max-h-64 rounded mt-2")
+                                    else:
+                                        ui.label(clip_path).classes("text-gray-400 text-xs")
 
-            except Exception as e:
-                ui.notify(f"Error: {e}", type="negative")
-                logger.error("gui_pipeline_error", error=str(e))
-            finally:
-                process_btn.enable()
-                observer.is_running = False
+                    except Exception as e:
+                        ui.notify(f"Error: {e}", type="negative")
+                        logger.error("gui_pipeline_error", error=str(e))
+                    finally:
+                        process_btn.enable()
+                        observer.is_running = False
+
+            # Launch as background task (survives browser disconnect)
+            ui.timer(0, lambda: asyncio.ensure_future(_run_job()), once=True)
 
     @ui.page("/settings")
     def settings_page():
@@ -267,13 +279,13 @@ def create_app():
             # Admin password
             with ui.card().classes("w-full bg-gray-800 border-gray-700"):
                 ui.label("🔐 Admin Password").classes("text-lg text-white font-medium")
-                admin_pw = ui.input(label="Admin Password", value=s.admin_password, password=True).classes("w-full mt-2").props("outlined dark")
+                admin_pw = ui.input(label="Admin Password", placeholder="••••••••" if s.admin_password else "", password=True).classes("w-full mt-2").props("outlined dark")
 
             # Groq
             with ui.card().classes("w-full bg-gray-800 border-gray-700"):
                 ui.label("🎤 Groq (Speech-to-Text)").classes("text-lg text-white font-medium")
                 ui.label("Free whisper-large-v3-turbo API. No GPU needed.").classes("text-gray-400 text-sm")
-                groq_key = ui.input(label="Groq API Key", value=s.groq_api_key, password=True).classes("w-full mt-2").props("outlined dark")
+                groq_key = ui.input(label="Groq API Key", placeholder="••••••••" if s.groq_api_key else "gsk_...", password=True).classes("w-full mt-2").props("outlined dark")
                 groq_status = ui.label("").classes("text-sm")
 
                 async def check_groq():
@@ -288,7 +300,7 @@ def create_app():
             # Qwen
             with ui.card().classes("w-full bg-gray-800 border-gray-700"):
                 ui.label("🧠 Qwen / ModelScope (LLM)").classes("text-lg text-white font-medium")
-                qwen_key = ui.input(label="API Key", value=s.qwen_api_key, password=True).classes("w-full mt-2").props("outlined dark")
+                qwen_key = ui.input(label="API Key", placeholder="••••••••" if s.qwen_api_key else "sk-...", password=True).classes("w-full mt-2").props("outlined dark")
                 qwen_url = ui.input(label="Base URL", value=s.qwen_base_url).classes("w-full mt-2").props("outlined dark")
                 qwen_model = ui.input(label="Model", value=s.qwen_model).classes("w-full mt-2").props("outlined dark")
                 qwen_status = ui.label("").classes("text-sm")
@@ -305,15 +317,15 @@ def create_app():
             # Publishing
             with ui.card().classes("w-full bg-gray-800 border-gray-700"):
                 ui.label("📤 Publishing").classes("text-lg text-white font-medium")
-                yt_secrets = ui.textarea(label="YouTube Client Secrets JSON", value=s.youtube_client_secrets).classes("w-full mt-2").props("outlined dark")
-                up_key = ui.input(label="Upload-Post API Key (TikTok)", value=s.upload_post_api_key, password=True).classes("w-full mt-2").props("outlined dark")
-                ig_token = ui.input(label="Instagram Access Token", value=s.instagram_access_token, password=True).classes("w-full mt-2").props("outlined dark")
+                yt_secrets = ui.textarea(label="YouTube Client Secrets JSON", placeholder="••• configured •••" if s.youtube_client_secrets else "Paste client_secrets.json content").classes("w-full mt-2").props("outlined dark")
+                up_key = ui.input(label="Upload-Post API Key (TikTok)", placeholder="••••••••" if s.upload_post_api_key else "", password=True).classes("w-full mt-2").props("outlined dark")
+                ig_token = ui.input(label="Instagram Access Token", placeholder="••••••••" if s.instagram_access_token else "", password=True).classes("w-full mt-2").props("outlined dark")
                 ig_uid = ui.input(label="Instagram User ID", value=s.instagram_user_id).classes("w-full mt-2").props("outlined dark")
 
             # Telegram
             with ui.card().classes("w-full bg-gray-800 border-gray-700"):
                 ui.label("💬 Telegram Approval Gate").classes("text-lg text-white font-medium")
-                tg_token = ui.input(label="Bot Token", value=s.telegram_bot_token, password=True).classes("w-full mt-2").props("outlined dark")
+                tg_token = ui.input(label="Bot Token", placeholder="••••••••" if s.telegram_bot_token else "", password=True).classes("w-full mt-2").props("outlined dark")
                 tg_chat = ui.input(label="Chat ID", value=s.telegram_chat_id).classes("w-full mt-2").props("outlined dark")
                 approval = ui.checkbox("Require approval before publishing", value=s.approval_required).classes("mt-2 text-white")
 
@@ -329,25 +341,27 @@ def create_app():
             # Save
             async def save_all():
                 try:
-                    new_settings = update_settings(
-                        admin_password=admin_pw.value,
-                        groq_api_key=groq_key.value,
-                        qwen_api_key=qwen_key.value,
-                        qwen_base_url=qwen_url.value,
-                        qwen_model=qwen_model.value,
-                        youtube_client_secrets=yt_secrets.value,
-                        upload_post_api_key=up_key.value,
-                        instagram_access_token=ig_token.value,
-                        instagram_user_id=ig_uid.value,
-                        telegram_bot_token=tg_token.value,
-                        telegram_chat_id=tg_chat.value,
-                        approval_required=approval.value,
-                        clip_min_duration=int(min_dur.value),
-                        clip_max_duration=int(max_dur.value),
-                        max_clips_per_video=int(max_clips.value),
-                        ffmpeg_threads=int(threads.value),
-                        burn_subtitles=burn_subs.value,
-                    )
+                    # Preserve existing keys if user left placeholder unchanged (empty input)
+                    updates = {
+                        "admin_password": admin_pw.value or s.admin_password,
+                        "groq_api_key": groq_key.value or s.groq_api_key,
+                        "qwen_api_key": qwen_key.value or s.qwen_api_key,
+                        "qwen_base_url": qwen_url.value,
+                        "qwen_model": qwen_model.value,
+                        "youtube_client_secrets": yt_secrets.value or s.youtube_client_secrets,
+                        "upload_post_api_key": up_key.value or s.upload_post_api_key,
+                        "instagram_access_token": ig_token.value or s.instagram_access_token,
+                        "instagram_user_id": ig_uid.value,
+                        "telegram_bot_token": tg_token.value or s.telegram_bot_token,
+                        "telegram_chat_id": tg_chat.value,
+                        "approval_required": approval.value,
+                        "clip_min_duration": int(min_dur.value),
+                        "clip_max_duration": int(max_dur.value),
+                        "max_clips_per_video": int(max_clips.value),
+                        "ffmpeg_threads": int(threads.value),
+                        "burn_subtitles": burn_subs.value,
+                    }
+                    new_settings = update_settings(**updates)
                     ui.notify("Settings saved!", type="positive")
                 except Exception as e:
                     ui.notify(f"Save failed: {e}", type="negative")

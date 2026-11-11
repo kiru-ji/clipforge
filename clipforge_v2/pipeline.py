@@ -239,6 +239,12 @@ class Pipeline(ProgressSubject):
                 import shutil
                 shutil.rmtree(download_dir, ignore_errors=True)
 
+            # Run periodic cleanup of old output files
+            try:
+                await self.video.cleanup_old(self.settings.work_dir, self.settings.auto_cleanup_hours)
+            except Exception as e:
+                logger.warning("cleanup_failed", error=str(e))
+
         return result
 
     async def _notify(self, job_id: str, status: JobStatus, pct: float,

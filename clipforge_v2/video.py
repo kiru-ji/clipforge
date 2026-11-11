@@ -40,7 +40,10 @@ _DOWNLOAD_TIMEOUT = 1800   # 30 minutes max for yt-dlp
 # J52/SSRF: blocked hosts/schemes
 _BLOCKED_SCHEMES = {"file", "ftp", "gopher", "data"}
 _BLOCKED_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "[::1]", "metadata.google.internal"}
-_BLOCKED_PREFIXES = ("169.254.", "10.", "172.16.", "172.17.", "192.168.")
+_BLOCKED_PREFIXES = ("169.254.", "10.", "172.16.", "172.17.", "172.18.", "172.19.",
+                      "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
+                      "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.",
+                      "192.168.", "100.64.")
 
 
 def _validate_url(url: str) -> None:
@@ -132,16 +135,17 @@ class FFmpegVideoProcessor(VideoProcessor):
     ) -> Path:
         """
         Single-pass extract + reframe + optional subtitle burn (J59: one encode, not two).
+        Uses -ss/-to INPUT seeking so both video AND audio are trimmed correctly.
         J54: validates output exists and has size > 0.
         """
         probe = await self._probe(source)
         w, h = probe["width"], probe["height"]
 
-        # Build filter chain
-        filters = []
+        # Build video filter chain (always comma-joined, never semicolons)
+        filters: list[str] = []
 
-        # Time trim
-        filters.append(f"trim=start={start}:end={end},setpts=PTS-STARTPTS")
+        # Reset timestamps after input seeking
+        filters.append("setpts=PTS-STARTPTS")
 
         # Reframe to 9:16
         if w > h:  # Landscape → center crop (P38: documented limitation)
@@ -150,13 +154,8 @@ class FFmpegVideoProcessor(VideoProcessor):
             x = _align_even(max(0, (w - crop_w) // 2))
             filters.append(f"crop={crop_w}:{crop_h}:{x}:0")
             filters.append("scale=1080:1920:flags=lanczos")
-        elif w == h:  # Square → blur background
-            filters.append(
-                "split[bg][fg];"
-                "[bg]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:5[b];"
-                "[fg]scale=1080:1920:force_original_aspect_ratio=decrease[f];"
-                "[b][f]overlay=(W-w)/2:(H-h)/2"
-            )
+        elif w == h:  # Square → blur background (needs filter_complex)
+            return await self._extract_square_blur(source, start, end, output, transcript_segments, burn_subs)
         else:  # Already vertical
             filters.append("scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2")
 
@@ -173,10 +172,14 @@ class FFmpegVideoProcessor(VideoProcessor):
                     f"OutlineColour=&H000000,Outline=2,MarginV=40'"
                 )
 
-        vf = ",".join(filters) if len(filters) <= 2 else ";".join(filters)
+        # ALWAYS comma-join (simple filtergraph). Semicolons create separate chains = crash.
+        vf = ",".join(filters)
 
+        # Use -ss/-to BEFORE -i for fast input seeking (trims BOTH video and audio)
         cmd = [
-            "ffmpeg", "-y", "-i", str(source),
+            "ffmpeg", "-y",
+            "-ss", str(start), "-to", str(end),
+            "-i", str(source),
             "-vf", vf,
             "-c:v", "libx264", "-preset", "fast", "-crf", "23",
             "-c:a", "aac", "-b:a", "128k",
@@ -195,6 +198,56 @@ class FFmpegVideoProcessor(VideoProcessor):
             raise RuntimeError(f"Extract+reframe failed: {stderr.decode()[-300:]}")
 
         # J54: validate output
+        if not output.exists() or output.stat().st_size == 0:
+            raise RuntimeError(f"Output file is empty or missing: {output}")
+
+        return output
+
+    async def _extract_square_blur(
+        self, source: Path, start: float, end: float, output: Path,
+        transcript_segments: tuple[TranscriptSegment, ...], burn_subs: bool,
+    ) -> Path:
+        """Square video needs filter_complex (split/overlay), not simple -vf."""
+        fc = (
+            "[0:v]split[bg][fg];"
+            "[bg]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,boxblur=20:5[b];"
+            "[fg]scale=1080:1920:force_original_aspect_ratio=decrease[f];"
+            "[b][f]overlay=(W-w)/2:(H-h)/2"
+        )
+
+        # Add subtitle filter if needed
+        srt_path = None
+        if burn_subs and transcript_segments:
+            srt_path = output.with_suffix(".srt")
+            _write_srt(srt_path, transcript_segments, start, end)
+            if srt_path.exists() and srt_path.stat().st_size > 0:
+                escaped_srt = str(srt_path).replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
+                fc += (
+                    f"[outv];[outv]subtitles='{escaped_srt}':"
+                    f"force_style='FontSize=22,PrimaryColour=&HFFFFFF,"
+                    f"OutlineColour=&H000000,Outline=2,MarginV=40'"
+                )
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", str(start), "-to", str(end),
+            "-i", str(source),
+            "-filter_complex", fc,
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-c:a", "aac", "-b:a", "128k",
+            "-threads", str(self.threads),
+            "-movflags", "+faststart",
+            str(output),
+        ]
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=_SUBPROCESS_TIMEOUT)
+
+        if srt_path and srt_path.exists():
+            srt_path.unlink()
+
+        if proc.returncode != 0:
+            raise RuntimeError(f"Square blur extract failed: {stderr.decode()[-300:]}")
+
         if not output.exists() or output.stat().st_size == 0:
             raise RuntimeError(f"Output file is empty or missing: {output}")
 

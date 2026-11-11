@@ -56,7 +56,7 @@ class QwenLLMBackend(LLMBackend):
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
-            timeout=60.0,       # J47: explicit timeout
+            timeout=180.0,      # J47/HIGH-14: 180s for large moment detection calls
             max_retries=2,      # J47: SDK-level retries
         )
         self.model = model

@@ -123,6 +123,10 @@ class Settings(BaseSettings):
     def has_tiktok(self) -> bool:
         return bool(self.upload_post_api_key)
 
+    @property
+    def has_instagram(self) -> bool:
+        return bool(self.instagram_access_token and self.instagram_user_id)
+
     def save_to_env(self) -> None:
         """
         Persist settings to .env file.

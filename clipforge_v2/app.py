@@ -179,8 +179,11 @@ def create_app():
                 ui.notify("Please enter a valid URL", type="warning")
                 return
 
-            # P14/J83: prevent concurrent runs (module-level lock)
-            if _pipeline_lock.locked():
+            # P14/J83: prevent concurrent runs. BOTH checks needed:
+            # observer.is_running is set synchronously below (catches same-session
+            # double-clicks before the ui.timer task acquires the lock);
+            # _pipeline_lock is module-level (catches jobs from other sessions).
+            if _pipeline_lock.locked() or observer.is_running:
                 ui.notify("A job is already running", type="warning")
                 return
 

@@ -22,8 +22,10 @@ Fixes applied (vs audit):
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import re
+import socket
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -37,26 +39,81 @@ logger = structlog.get_logger(__name__)
 _SUBPROCESS_TIMEOUT = 600  # 10 minutes max per FFmpeg call
 _DOWNLOAD_TIMEOUT = 1800   # 30 minutes max for yt-dlp
 
-# J52/SSRF: blocked hosts/schemes
+# J52/SSRF: blocked hosts/schemes + private/reserved networks.
+# ENI fix (12 Nov 2026): string-prefix matching on the host literal was
+# bypassable three ways: (1) it only blocked "100.64.*" (= /16), leaving
+# 63/64ths of the CGNAT 100.64/10 range open (e.g. 100.100.5.5 — used by
+# Oracle Cloud internal services); (2) integer-form IPs like
+# http://2130706433/ (= 127.0.0.1) matched no prefix; (3) DNS names
+# resolving to internal IPs were never checked at all. Now every host is
+# resolved and every resulting IP checked against proper CIDR networks.
 _BLOCKED_SCHEMES = {"file", "ftp", "gopher", "data"}
-_BLOCKED_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "[::1]", "metadata.google.internal"}
-_BLOCKED_PREFIXES = ("169.254.", "10.", "172.16.", "172.17.", "172.18.", "172.19.",
-                      "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.",
-                      "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.",
-                      "192.168.", "100.64.")
+_BLOCKED_HOSTS = {"localhost", "metadata.google.internal"}
+_BLOCKED_NETWORKS = tuple(
+    ipaddress.ip_network(cidr) for cidr in (
+        "0.0.0.0/8",        # "this" network
+        "10.0.0.0/8",       # RFC 1918 private (incl. VPS WireGuard tunnel)
+        "100.64.0.0/10",    # RFC 6598 CGNAT (Oracle Cloud internal services)
+        "127.0.0.0/8",      # loopback
+        "169.254.0.0/16",   # link-local: cloud metadata (169.254.169.254)
+        "172.16.0.0/12",    # RFC 1918 private (covers 172.16-31, Docker)
+        "192.168.0.0/16",   # RFC 1918 private
+        "::1/128",          # IPv6 loopback
+        "fc00::/7",         # IPv6 unique-local
+        "fe80::/10",        # IPv6 link-local
+    )
+)
+
+
+def _ip_is_blocked(ip_str: str) -> bool:
+    """True if ip_str falls in any blocked network. Fails CLOSED on garbage."""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return True
+    return any(ip.version == net.version and ip in net for net in _BLOCKED_NETWORKS)
 
 
 def _validate_url(url: str) -> None:
-    """J52: reject SSRF-targeting URLs before passing to yt-dlp."""
+    """J52: reject SSRF-targeting URLs before passing to yt-dlp.
+
+    Checks the literal host, and for hostnames every IP from getaddrinfo,
+    against _BLOCKED_NETWORKS. Known limitation (documented, not fixed):
+    TOCTOU DNS rebinding — validation and yt-dlp each resolve separately;
+    closing that fully requires pinning the validated IP into the download.
+    """
     parsed = urlparse(url)
     if parsed.scheme.lower() in _BLOCKED_SCHEMES:
         raise ValueError(f"Blocked URL scheme: {parsed.scheme}")
     host = (parsed.hostname or "").lower()
-    if host in _BLOCKED_HOSTS:
+    if not host:
+        raise ValueError("URL has no host")
+    if host in _BLOCKED_HOSTS or f"[{host}]" in _BLOCKED_HOSTS:
         raise ValueError(f"Blocked host: {host}")
-    for prefix in _BLOCKED_PREFIXES:
-        if host.startswith(prefix):
+
+    candidate = host.strip("[]")
+    try:
+        ipaddress.ip_address(candidate)
+        is_literal_ip = True
+    except ValueError:
+        is_literal_ip = False
+
+    if is_literal_ip:
+        if _ip_is_blocked(candidate):
             raise ValueError(f"Blocked private IP range: {host}")
+        return
+
+    # Hostname: resolve and check EVERY address (catches DNS -> internal IPs,
+    # and integer-form hosts like "2130706433" which getaddrinfo normalizes).
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return  # unresolvable: let yt-dlp surface the real error
+    for info in infos:
+        addr = str(info[4][0]).split("%")[0]  # strip IPv6 scope id
+        if _ip_is_blocked(addr):
+            raise ValueError(
+                f"Blocked host resolving into private range: {host} -> {addr}")
 
 
 class FFmpegVideoProcessor(VideoProcessor):

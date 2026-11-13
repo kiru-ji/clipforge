@@ -225,7 +225,7 @@ class FFmpegVideoProcessor(VideoProcessor):
                 # J57/P36: proper escaping for FFmpeg subtitles filter
                 escaped_srt = str(srt_path).replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
                 filters.append(
-                    f"subtitles='{escaped_srt}':force_style='FontSize=22,PrimaryColour=&HFFFFFF,"
+                    f"subtitles='{escaped_srt}':force_style='FontSize=11,PrimaryColour=&HFFFFFF,"
                     f"OutlineColour=&H000000,Outline=2,MarginV=40'"
                 )
 
@@ -281,7 +281,7 @@ class FFmpegVideoProcessor(VideoProcessor):
                 escaped_srt = str(srt_path).replace("\\", "\\\\").replace("'", "\\'").replace(":", "\\:")
                 fc += (
                     f"[outv];[outv]subtitles='{escaped_srt}':"
-                    f"force_style='FontSize=22,PrimaryColour=&HFFFFFF,"
+                    f"force_style='FontSize=11,PrimaryColour=&HFFFFFF,"
                     f"OutlineColour=&H000000,Outline=2,MarginV=40'"
                 )
 

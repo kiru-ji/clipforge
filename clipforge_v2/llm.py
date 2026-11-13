@@ -79,6 +79,10 @@ class QwenLLMBackend(LLMBackend):
                 temperature=0.7,
                 seed=42,  # P33: reproducible
                 max_tokens=4096,
+                # ModelScope gateway 504s on long thinking-mode calls (verified
+                # 12 Nov 2026: same prompt 504 with thinking, 8s without).
+                # Moment detection is extraction, not chain-of-thought work.
+                extra_body={"enable_thinking": False},
             )
             content = response.choices[0].message.content  # J46: can be None
             if not content:
@@ -141,6 +145,7 @@ class QwenLLMBackend(LLMBackend):
                 temperature=0.8,
                 seed=42,
                 max_tokens=2048,
+                extra_body={"enable_thinking": False},  # see detect_moments: avoids gateway 504s
             )
             content = response.choices[0].message.content
             if not content:

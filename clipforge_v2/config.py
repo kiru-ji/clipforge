@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     qwen_base_url: str = Field(default="https://dashscope.aliyuncs.com/compatible-mode/v1")
     qwen_model: str = Field(default="qwen-plus")
 
+    # ─── TTS (ElevenLabs — wired 12 Nov 2026; NOT called until voice casting done) ──
+    elevenlabs_api_key: str = Field(default="")
+    elevenlabs_voice_id: str = Field(default="", description="Pending voice casting — leave empty")
+    elevenlabs_model_id: str = Field(default="eleven_multilingual_v2")
+
     # ─── Publishing ─────────────────────────────────────────────────────────
     youtube_client_secrets: str = Field(default="")
     upload_post_api_key: str = Field(default="")
@@ -114,6 +119,12 @@ class Settings(BaseSettings):
     @property
     def has_qwen(self) -> bool:
         return bool(self.qwen_api_key)
+
+    @property
+    def has_elevenlabs(self) -> bool:
+        """True when an ElevenLabs key is present. Voice casting pending →
+        elevenlabs_voice_id may still be empty; synthesize() requires it."""
+        return bool(self.elevenlabs_api_key)
 
     @property
     def has_youtube(self) -> bool:

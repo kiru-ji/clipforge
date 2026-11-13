@@ -173,6 +173,22 @@ class LLMBackend(ABC):
         ...
 
 
+class TTSBackend(ABC):
+    """Text-to-speech backend (narration/voice-over synthesis).
+
+    Wired 12 Nov 2026 for ElevenLabs. NOTE: voice casting for 'Kitaab Adalat'
+    is pending — no caller may invoke synthesize() until a voice_id is chosen.
+    """
+    @abstractmethod
+    async def synthesize(self, text: str, output_path: Path, voice_id: str | None = None) -> Path:
+        """Synthesize text to an audio file. Returns output_path."""
+        ...
+
+    @abstractmethod
+    async def health_check(self) -> bool:
+        ...
+
+
 class VideoProcessor(ABC):
     @abstractmethod
     async def download(self, url: str, job_download_dir: Path) -> tuple[Path, str]:

@@ -41,10 +41,24 @@ class RateLimitError(Exception):
 class GroqASRBackend(ASRBackend):
     """Groq-hosted Whisper API with word-level timestamps."""
 
-    def __init__(self, api_key: str, model: str = "whisper-large-v3-turbo"):
+    def __init__(self, api_key: str, model: str = "whisper-large-v3-turbo",
+                 local_address: str | None = None):
         self.api_key = api_key
         self.model = model
         self.base_url = "https://api.groq.com/openai/v1/audio/transcriptions"
+        # Optional egress pinning: bind outbound sockets to one source IP.
+        # On this VPS the default route exits via a WireGuard VPN whose IP Groq
+        # rejects with 403 "Access denied. Please check your network settings.";
+        # binding to the host's own address (policy-routed direct) returns 200.
+        self._transport = (
+            httpx.AsyncHTTPTransport(local_address=local_address) if local_address else None
+        )
+
+    def _client(self, timeout: float) -> httpx.AsyncClient:
+        kw: dict = {"timeout": timeout}
+        if self._transport is not None:
+            kw["transport"] = self._transport
+        return httpx.AsyncClient(**kw)
 
     @retry(
         stop=stop_after_attempt(3),
@@ -54,7 +68,7 @@ class GroqASRBackend(ASRBackend):
     )
     async def _transcribe_file(self, audio_path: Path) -> dict:
         """Transcribe a single file (<24MB) via Groq API with retry."""
-        async with httpx.AsyncClient(timeout=300) as client:
+        async with self._client(300) as client:
             with open(audio_path, "rb") as f:
                 response = await client.post(
                     self.base_url,
@@ -184,7 +198,7 @@ class GroqASRBackend(ASRBackend):
     async def health_check(self) -> bool:
         """J29: distinguish invalid key from network down."""
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with self._client(10) as client:
                 r = await client.get(
                     "https://api.groq.com/openai/v1/models",
                     headers={"Authorization": f"Bearer {self.api_key}"},
